@@ -60,6 +60,17 @@ set(CMAKE_CUDA_STANDARD          14)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS        OFF)
 
+option(WITH_CUP04     "Whether to use cuSPARSELT 0.4." OFF)
+option(WITH_INT8 "Whether to use INT8."           OFF)
+
+if(WITH_CUP04)
+    add_definitions(-DWITH_CUP04)
+endif()
+
+if(WITH_INT8)
+    add_definitions(-DWITH_INT8)
+endif()
+
 string(REPLACE "/bin/nvcc" "" CUDA_TOOLKIT_PATH ${CMAKE_CUDA_COMPILER})
 if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "aarch64" AND
     ${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
@@ -84,7 +95,7 @@ endfunction()
 
 set_with_fallback(CUSPARSELT_PATH CUSPARSELT_DIR)
 if (CUSPARSELT_PATH STREQUAL "")
-    message(FATAL_ERROR "Please set the environment variables CUSPARSELT_DIR to the path of the cuSPARSELt installation.")
+	message(FATAL_ERROR "Please set the environment variables CUSPARSELT_PATH to the path of the cuSPARSELt installation.")
 endif ()
 
 message(STATUS "Using CUSPARSELT_PATH = ${CUSPARSELT_DIR}")

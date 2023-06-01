@@ -93,9 +93,10 @@ function(set_with_fallback VARIABLE FALLBACK)
   endif ()
 endfunction()
 
-set_with_fallback(CUSPARSELT_PATH CUSPARSELT_DIR)
+set(CUSPARSELT_PATH  ${CUSPARSELT_DIR})
+
 if (CUSPARSELT_PATH STREQUAL "")
-	message(FATAL_ERROR "Please set the environment variables CUSPARSELT_PATH to the path of the cuSPARSELt installation.")
+	message(FATAL_ERROR "Please set the environment variables CUSPARSELT_DIR to the path of the cuSPARSELt installation.")
 endif ()
 
 message(STATUS "Using CUSPARSELT_PATH = ${CUSPARSELT_DIR}")

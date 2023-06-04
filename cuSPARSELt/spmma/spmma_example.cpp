@@ -75,7 +75,12 @@
 
 constexpr int EXIT_UNSUPPORTED = 2;
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc != 4) {
+        std::cout << "Usage: ./benchmark <M> <N> <K>" << std::endl;
+        return 0;
+    }
+
     int major_cc, minor_cc;
     CHECK_CUDA( cudaDeviceGetAttribute(&major_cc,
                                        cudaDevAttrComputeCapabilityMajor, 0) )
@@ -90,9 +95,12 @@ int main(void) {
     }
     // Host problem definition, row-major order
     // hidden_size 12288
-    constexpr int m     = 7200; // bigger sizes may require dynamic allocations
-    constexpr int k     = 49152 / 8; // bigger sizes may require dynamic allocations
-    constexpr int n     = 12288; // bigger sizes may require dynamic allocations
+    int m     = std::atoi(argv[1]); // bigger sizes may require dynamic allocations
+    int k     = std::atoi(argv[2]); // bigger sizes may require dynamic allocations
+    int n     = std::atoi(argv[3]); // bigger sizes may require dynamic allocations
+    //constexpr int m     = 32; // bigger sizes may require dynamic allocations
+    //constexpr int k     = 32; // bigger sizes may require dynamic allocations
+    //constexpr int n     = 32; // bigger sizes may require dynamic allocations
     auto          order = CUSPARSE_ORDER_ROW;
     auto          opA   = CUSPARSE_OPERATION_NON_TRANSPOSE;
     auto          opB   = CUSPARSE_OPERATION_TRANSPOSE;
@@ -120,7 +128,7 @@ int main(void) {
     auto     B_height       = (is_rowmajor) ? num_B_rows : num_B_cols;
     auto     C_height       = (is_rowmajor) ? num_C_rows : num_C_cols;
 #ifdef WITH_INT8
-    float weight_scale[C_height * ldc];
+    float *weight_scale = new float[C_height * ldc];
     for (int i=0; i<C_height * ldc; ++i) {
         weight_scale[i] = 0.1f;
     }
@@ -132,13 +140,15 @@ int main(void) {
     auto     A_size         = A_height * lda * sizeof(int8_t);
     auto     B_size         = B_height * ldb * sizeof(int8_t);
     auto     C_size         = C_height * ldc * sizeof(int8_t);
-    int8_t hA[m * k];
-    int8_t hB[k * n];
-    int8_t hC[m * n] = {};
+    int8_t *hA = new int8_t[m * k];
+    int8_t *hB = new int8_t[k * n];
+    int8_t *hC = new int8_t[m * n];
     for (int i = 0; i < m * k; i++)
         hA[i] = static_cast<int8_t>(static_cast<float>(std::rand() % 10));
     for (int i = 0; i < k * n; i++)
         hB[i] = static_cast<int8_t>(static_cast<float>(std::rand() % 10));
+    for (int i = 0; i < m * n; i++)
+        hC[i] = static_cast<int8_t>(0);
 #else
     auto     A_size         = A_height * lda * sizeof(__half);
     auto     B_size         = B_height * ldb * sizeof(__half);
@@ -157,15 +167,15 @@ int main(void) {
     // Device memory management
 
 #ifdef WITH_INT8
-    int8_t *dA, *dB, *dC, *dD, *dA_compressed;
+    int8_t *dA, *dB, *dC, *dD, *dB_compressed;
 #ifdef WITH_CUP04
-    int8_t *dA_compressed_buffer;
+    int8_t *dB_compressed_buffer;
 #endif
 
 #else
-    __half *dA, *dB, *dC, *dD, *dA_compressed;
+    __half *dA, *dB, *dC, *dD, *dB_compressed;
 #ifdef WITH_CUP04
-    __half *dA_compressed_buffer;
+    __half *dB_compressed_buffer;
 #endif
 
 #endif
@@ -188,15 +198,15 @@ int main(void) {
     cudaStream_t                   stream = nullptr;
     CHECK_CUSPARSE( cusparseLtInit(&handle) )
     // matrix descriptor initialization
-    CHECK_CUSPARSE( cusparseLtStructuredDescriptorInit(
+    CHECK_CUSPARSE( cusparseLtDenseDescriptorInit(
                                             &handle, &matA, num_A_rows,
                                             num_A_cols, lda, alignment,
-                                            type, order,
-                                            CUSPARSELT_SPARSITY_50_PERCENT) )
-    CHECK_CUSPARSE( cusparseLtDenseDescriptorInit(
+                                            type, order) )
+    CHECK_CUSPARSE( cusparseLtStructuredDescriptorInit(
                                             &handle, &matB, num_B_rows,
                                             num_B_cols, ldb, alignment,
-                                            type, order) )
+                                            type, order,
+                                            CUSPARSELT_SPARSITY_50_PERCENT) )
     CHECK_CUSPARSE( cusparseLtDenseDescriptorInit(
                                             &handle, &matC, num_C_rows,
                                             num_C_cols, ldc, alignment,
@@ -230,10 +240,10 @@ int main(void) {
                                              workspace_size) )
 #endif
     //--------------------------------------------------------------------------
-    // Prune the A matrix (in-place) and check the correctness
-    CHECK_CUSPARSE( cusparseLtSpMMAPrune(&handle, &matmul, dA, dA,
+    // Prune the B matrix (in-place) and check the correctness
+    CHECK_CUSPARSE( cusparseLtSpMMAPrune(&handle, &matmul, dB, dB,
                                          CUSPARSELT_PRUNE_SPMMA_TILE, stream) )
-    CHECK_CUSPARSE( cusparseLtSpMMAPruneCheck(&handle, &matmul, dA,
+    CHECK_CUSPARSE( cusparseLtSpMMAPruneCheck(&handle, &matmul, dB,
                                               d_valid, stream) )
     int is_valid;
     CHECK_CUDA( cudaMemcpyAsync(&is_valid, d_valid, sizeof(int),
@@ -253,28 +263,28 @@ int main(void) {
 #endif
 
 #ifdef WITH_CUP04
-    CHECK_CUSPARSE( cusparseLtSpMMACompressedSize2(&handle, &matA, &compressed_size, &compressed_buffer_size) )
+    CHECK_CUSPARSE( cusparseLtSpMMACompressedSize2(&handle, &matB, &compressed_size, &compressed_buffer_size) )
 #else
     CHECK_CUSPARSE( cusparseLtSpMMACompressedSize(&handle, &plan,
                                                   &compressed_size) )
 #endif
-    CHECK_CUDA( cudaMalloc((void**) &dA_compressed, compressed_size) )
+    CHECK_CUDA( cudaMalloc((void**) &dB_compressed, compressed_size) )
 
 #ifdef WITH_CUP04
-    CHECK_CUDA( cudaMalloc((void**) &dA_compressed_buffer, compressed_buffer_size) )
+    CHECK_CUDA( cudaMalloc((void**) &dB_compressed_buffer, compressed_buffer_size) )
 #endif
 
 #ifdef WITH_CUP04
     CHECK_CUSPARSE( cusparseLtSpMMACompress(
         &handle,
         &plan,
-        dA,
-        dA_compressed,
-        dA_compressed_buffer,
+        dB,
+        dB_compressed,
+        dB_compressed_buffer,
         stream) )
 #else
-    CHECK_CUSPARSE( cusparseLtSpMMACompress(&handle, &plan, dA,
-                                            dA_compressed, stream) )
+    CHECK_CUSPARSE( cusparseLtSpMMACompress(&handle, &plan, dB,
+                                            dB_compressed, stream) )
 #endif
     //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     // Search the best kernel
@@ -283,12 +293,12 @@ int main(void) {
     cudaStream_t* streams     = nullptr;
 #ifdef WITH_INT8
     CHECK_CUSPARSE( cusparseLtMatmulSearch(&handle, &plan, weight_scale_dev,
-                                           dA_compressed, dB, &beta,
+                                           dA, dB_compressed, &beta,
                                            dC, dD, d_workspace,
                                            streams, num_streams) )
 #else
     CHECK_CUSPARSE( cusparseLtMatmulSearch(&handle, &plan, &alpha,
-                                           dA_compressed, dB, &beta,
+                                           dA, dB_compressed, &beta,
                                            dC, dD, d_workspace,
                                            streams, num_streams) )
 #endif
@@ -338,18 +348,18 @@ int main(void) {
             start = std::chrono::high_resolution_clock::now();
         }
 #ifdef WITH_INT8
-        cusparseLtMatmul(&handle, &plan, weight_scale_dev, dA_compressed, dB,
+        cusparseLtMatmul(&handle, &plan, weight_scale_dev, dA, dB_compressed,
                                         &beta, dC, dD, d_workspace, streams,
                                         num_streams);
 #else
-        cusparseLtMatmul(&handle, &plan, &alpha, dA_compressed, dB,
+        cusparseLtMatmul(&handle, &plan, &alpha, dA, dB_compressed,
                                         &beta, dC, dD, d_workspace, streams,
                                         num_streams);
 #endif
     }
     cudaDeviceSynchronize();
     end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> time_span = std::chrono::duration_cast<std::chrono::duration<double>>(end - start);
+    std::chrono::duration<double> time_span = std::chrono::duration_cast<std::chrono::duration<double>>(end - start);      
     std::cout << time_span.count() * 1000.0 / 1000.0 << "ms" << std::endl;
     exit(0);
 
@@ -405,7 +415,7 @@ int main(void) {
         std::printf("spmma_example test FAILED: wrong result\n");
     //--------------------------------------------------------------------------
     // device memory deallocation
-    CHECK_CUDA( cudaFree(dA_compressed) )
+    CHECK_CUDA( cudaFree(dB_compressed) )
     CHECK_CUDA( cudaFree(dA) )
     CHECK_CUDA( cudaFree(dB) )
     CHECK_CUDA( cudaFree(dC) )
